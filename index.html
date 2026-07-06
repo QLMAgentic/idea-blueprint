@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Idea Blueprint</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #e6e8ec;
+    --muted: #8b8f9a;
+    --accent: #5b8cff;
+    --good: #3ecf8e;
+    --bad: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #sidebar {
+    width: 340px;
+    border-right: 1px solid var(--border);
+    padding: 20px;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  #main {
+    flex: 1;
+    padding: 20px;
+    overflow-y: auto;
+  }
+  h1 { font-size: 18px; margin: 0 0 16px; }
+  h2 { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 24px 0 10px; }
+  textarea, input {
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 10px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    margin-top: 8px;
+    width: 100%;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .agent-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+  }
+  .pill {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #2a2e38;
+    color: var(--muted);
+  }
+  .pill.working { background: #3a3410; color: #e0c341; }
+  .pill.done { background: #10321f; color: var(--good); }
+  .pill.error { background: #3a1010; color: var(--bad); }
+  #activityFeed {
+    font-size: 12px;
+    color: var(--muted);
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  #activityFeed div { padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .time { color: #555; margin-right: 6px; }
+  .blueprint-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .blueprint-card h3 { margin: 0 0 4px; font-size: 16px; }
+  .blueprint-card .status { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .section-toggle {
+    cursor: pointer;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    justify-content: space-between;
+  }
+  .section-body {
+    display: none;
+    font-size: 13px;
+    color: #cfd2d8;
+    white-space: pre-wrap;
+    padding: 4px 0 12px;
+  }
+  .section-body.open { display: block; }
+  .export-row { display: flex; gap: 8px; margin-top: 10px; }
+  .export-row button { width: auto; flex: 1; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1>Idea Blueprint</h1>
+
+  <h2>New Idea</h2>
+  <input id="ideaName" placeholder="Idea name" />
+  <br><br>
+  <textarea id="ideaInput" placeholder="Describe the business idea..."></textarea>
+  <button id="submitBtn" onclick="submitIdea()">Generate Execution Blueprint</button>
+
+  <h2>Agent Status</h2>
+  <div id="agentStatusGrid"></div>
+
+  <h2>Activity</h2>
+  <div id="activityFeed"></div>
+</div>
+
+<div id="main">
+  <h2 style="margin-top:0">Blueprints</h2>
+  <div id="blueprintList"></div>
+</div>
+
+<script>
+// =========================================================================
+// CONFIG
+// =========================================================================
+let ANTHROPIC_API_KEY = null;
+
+async function loadConfig() {
+  const res = await fetch("/api/config");
+  const data = await res.json();
+  ANTHROPIC_API_KEY = data.anthropicApiKey;
+}
+
+// =========================================================================
+// AGENT ROSTER
+// =========================================================================
+const AGENTS = [
+  "Execution Strategist",
+  "Market Analyst",
+  "Financial Architect",
+  "Brand Developer",
+  "GTM Strategist",
+  "Problem Identifier",
+  "Orchestrator"
+];
+
+function setAgentStatus(agent, status) {
+  const id = "agent-" + agent.replace(/\s+/g, "-");
+  let card = document.getElementById(id);
+  if (!card) {
+    card = document.createElement("div");
+    card.className = "agent-card";
+    card.id = id;
+    card.innerHTML = `<span>${agent}</span><span class="pill" id="${id}-pill">idle</span>`;
+    document.getElementById("agentStatusGrid").appendChild(card);
+  }
+  const pill = document.getElementById(id + "-pill");
+  pill.className = "pill " + status;
+  pill.textContent = status;
+}
+AGENTS.forEach(a => setAgentStatus(a, "idle"));
+
+function addActivityLocal(message) {
+  const feed = document.getElementById("activityFeed");
+  const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const item = document.createElement("div");
+  item.innerHTML = `<span class="time">${now}</span><span>${message}</span>`;
+  feed.insertBefore(item, feed.firstChild);
+}
+
+async function logActivity(ideaId, agent, message) {
+  addActivityLocal(message);
+  try {
+    await fetch("/api/activity-feed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        Idea: [ideaId],
+        Timestamp: new Date().toISOString(),
+        Agent: agent,
+        Message: message
+      })
+    });
+  } catch (e) {
+    console.error("activity log failed", e);
+  }
+}
+
+// =========================================================================
+// callClaude - core pattern, browser-side to avoid Vercel's 300s timeout.
+// =========================================================================
+async function callClaude(systemPrompt, userMessage, maxTokens = 3000, useSearch = true) {
+  const body = {
+    model: "claude-sonnet-4-6",
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }]
+  };
+  if (useSearch) {
+    body.tools = [{ type: "web_search_20250305", name: "web_search" }];
+  }
+
+  let data = await postToClaude(body);
+
+  // Handle web search tool_use loop - follow up until the model is done
+  // searching. Capped to avoid runaway loops on an unexpected response shape.
+  let rounds = 0;
+  while (data.stop_reason === "tool_use" && rounds < 4) {
+    rounds++;
+    const toolUseBlocks = data.content.filter(b => b.type === "tool_use");
+    const toolResultBlocks = data.content.filter(b => b.type === "tool_result");
+
+    const followUpMessages = [
+      { role: "user", content: userMessage },
+      { role: "assistant", content: data.content },
+      {
+        role: "user",
+        content: toolUseBlocks.map(t => ({
+          type: "tool_result",
+          tool_use_id: t.id,
+          content: toolResultBlocks
+            .filter(b => b.tool_use_id === t.id)
+            .map(b => (typeof b.content === "string" ? b.content : JSON.stringify(b.content)))
+            .join("\n") || "Search completed."
+        }))
+      }
+    ];
+
+    body.messages = followUpMessages;
+    data = await postToClaude(body);
+  }
+
+  const textBlocks = data.content.filter(b => b.type === "text");
+  return textBlocks.map(b => b.text).join("\n").trim();
+}
+
+async function postToClaude(body) {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Claude API error ${response.status}: ${errText}`);
+  }
+  return response.json();
+}
+
+// One silent technical retry on failure. This is NOT a quality gate -
+// idea-blueprint does not score or revise agent output. It only protects
+// against transient network/API errors.
+async function callClaudeSafe(systemPrompt, userMessage, maxTokens, useSearch) {
+  try {
+    return await callClaude(systemPrompt, userMessage, maxTokens, useSearch);
+  } catch (e) {
+    console.warn("callClaude failed, retrying once:", e.message);
+    await new Promise(r => setTimeout(r, 1500));
+    return await callClaude(systemPrompt, userMessage, maxTokens, useSearch);
+  }
+}
+
+// =========================================================================
+// clean() - strip markdown artifacts before saving to structured fields
+// =========================================================================
+const clean = s => (s ? s.replace(/\*\*/g, "").replace(/^\s+|\s+$/g, "") : "");
+const trunc = (s, n) => (s ? clean(s).slice(0, n) : "");
+
+// =========================================================================
+// AGENT PROMPTS - execution mode, not analysis mode. Every agent produces
+// decisions and instructions, never insights or recommendations alone.
+// =========================================================================
+const PROMPTS = {
+
+"Execution Strategist": `You are the Execution Strategist for a business execution blueprint system.
+
+Your job is NOT to analyze whether this business is a good idea. The human has already decided to build it. Your job is to design the complete operational model for running it.
+
+You must answer, with specifics:
+- What combination of AI tools, outsourced contractors, white-label suppliers, and third-party services will handle approximately 90% of day-to-day operations? Name actual tools and actual service categories (e.g. "Zapier for order routing", "a Fiverr-sourced fulfillment VA at $8-12/hr", not "automation software").
+- What does the human owner actually do each week? Give a concrete weekly schedule with time blocks.
+- What is the implementation sequence - what gets set up first, second, third?
+
+Do not write in analysis language ("the market for X is..."). Write in execution language ("set up X using Y, here is exactly how"). Every sentence should be something the reader could act on today.
+
+Use web search to find real, current tools and services with real pricing where relevant - do not invent tool names or costs.
+
+Output format:
+1. Operational Model Overview (2-3 sentences)
+2. Tool & Service Stack (named tools/services, what each handles, approximate cost)
+3. Weekly Owner Schedule (day-by-day or time-blocked)
+4. Implementation Sequence (numbered, in order)`,
+
+"Market Analyst": `You are the Market Analyst for a business execution blueprint system.
+
+Your job is NOT to assess whether the market opportunity is attractive. The human has already decided to pursue this. Your job is to map the market for EXECUTION purposes only.
+
+You must answer, with specifics:
+- Who exactly is the target customer? Not a demographic description - a specific, findable profile (job title, platform they use, community they belong to, pain point they currently have).
+- Where exactly do you find them? Name specific platforms, subreddits, Facebook groups, directories, events, or search terms.
+- What do the 2-3 closest competitors actually do, and what specific gap will this business occupy that they don't?
+
+Use web search to identify real competitors and real communities/platforms where the target customer can be found - do not invent company names or platforms.
+
+Do not include general market sizing or growth-rate commentary unless it directly changes an execution decision. This is not a feasibility study.
+
+Output format:
+1. Target Customer Profile (specific and findable)
+2. Where to Find First Customers (named platforms/communities/channels)
+3. Competitive Positioning (2-3 named competitors, what they do, the specific gap)`,
+
+"Financial Architect": `You are the Financial Architect for a business execution blueprint system.
+
+Your job is NOT to assess financial viability. The human has already decided to build this. Your job is to build the complete financial execution model.
+
+You must answer, with specifics:
+- What is the pricing (specific numbers, not ranges where avoidable)?
+- What does the path to breakeven look like week by week for the first 90 days?
+- What needs to be spent, on what, and in what order (a capital deployment plan)?
+- 24-month monthly revenue and cost projections, even if approximate - give real numbers, not placeholders.
+
+Use web search to validate pricing benchmarks and typical cost structures for comparable businesses where relevant.
+
+Output format:
+1. Pricing Model (specific numbers)
+2. Capital Deployment Plan (what to spend, in what order, before launch)
+3. Path to Breakeven (week-by-week for first 90 days)
+4. 24-Month Projection (monthly, summarized - revenue, costs, net)`,
+
+"Brand Developer": `You are the Brand Developer for a business execution blueprint system.
+
+Your job is to develop a complete brand ready for immediate use. If upstream context (market/customer data) is thin or missing, proceed anyway using reasonable assumptions from the idea itself - never block on missing information.
+
+You must produce:
+- 3-5 name options, with a note on whether the .com domain and main social handles appear available (use web search to check)
+- A one-sentence positioning statement
+- Brand voice description with 2-3 example lines of copy in that voice
+- Visual identity direction specific enough to brief a designer (colors, type feel, reference aesthetics - not vague mood words alone)
+
+Output format:
+1. Name Options (with availability notes)
+2. Positioning Statement
+3. Brand Voice (description + example copy)
+4. Visual Identity Direction (specific enough to brief a designer)`,
+
+"GTM Strategist": `You are the GTM Strategist for a business execution blueprint system.
+
+Your job is NOT to evaluate go-to-market feasibility. Your job is to design the complete launch sequence for the first 90 days.
+
+Choose the PRIMARY launch channel based on this specific idea's target customer and product type - do not default to any one channel automatically. However, the founder has existing platform access that gives them free/low-cost reach into nano-influencer and affiliate networks. Treat this as an available asset and weigh it seriously as a candidate primary or secondary channel, but only recommend it if it actually fits this customer and product - if paid search, SEO content, cold outreach, a marketplace listing, or another channel is clearly the better fit, recommend that instead and explain briefly why.
+
+If influencer/affiliate is selected as a channel (primary or secondary), be specific: what type of nano-influencer to target, how to approach them, what to send them, what to ask for in return.
+
+You must produce a week-by-week plan for the first 90 days with specific actions, specific types of people/accounts to contact, and specific content to create.
+
+Use web search to ground channel recommendations in what's currently working for comparable products, where relevant.
+
+Output format:
+1. Primary Channel Decision (which channel, and why it fits this specific idea)
+2. Channel Execution Details (specific tactics for the chosen channel)
+3. 90-Day Week-by-Week Launch Plan`,
+
+"Problem Identifier": `You are the Problem Identifier for a business execution blueprint system.
+
+Your entire job is to find what will be hard. You are the one agent in this system whose role is skepticism - but constructive skepticism aimed at making the execution succeed, not at questioning whether to proceed. The decision to build has already been made.
+
+Given the full execution plan below (operations, market approach, financials, brand, and GTM plan), identify:
+- The top 5 things most likely to go wrong, ranked by severity
+- Which specific assumptions in the plan are unproven and need to be tested early
+- What will likely take longer or cost more than the plan assumes
+- What skills or resources the human needs that they may not currently have, and how to close that gap
+
+For every issue raised, give a specific mitigation - not "monitor this closely" but a concrete action.
+
+Output format:
+1. Top 5 Risks (ranked, each with a specific mitigation)
+2. Unproven Assumptions to Test Early
+3. Likely Overruns (time or cost)
+4. Skill/Resource Gaps and How to Close Them`,
+
+"Orchestrator": `You are the Orchestrator for a business execution blueprint system. You do not score, gate, or evaluate whether this idea is worth pursuing - that decision has already been made. Your job is to compile everything into a single coherent Execution Blueprint.
+
+Given all agent outputs below, produce a document with these exact sections, in this order:
+
+EXECUTIVE_BRIEFING:
+[2-3 paragraphs, written like a briefing to a business partner - what this business is, how it will run, the key execution decisions made]
+
+OPERATIONAL_DESIGN:
+[Synthesize the Execution Strategist's output into a clean operational summary]
+
+FINANCIAL_MODEL:
+[Synthesize the Financial Architect's output]
+
+BRAND_PACKAGE:
+[Synthesize the Brand Developer's output]
+
+LAUNCH_PLAYBOOK:
+[Synthesize the GTM Strategist's output]
+
+PROBLEM_AREAS:
+[Lead with the single most critical risk from the Problem Identifier's output, then the rest]
+
+NEXT_ACTIONS:
+[The first 10 things to do starting tomorrow, in order, pulled from across all agent outputs]
+
+Use exactly these section headers (all caps, followed by a colon, on their own line) so the output can be parsed programmatically.`
+};
+
+// =========================================================================
+// buildAgentContext - each agent gets only what it needs, not the full
+// accumulated output of every previous agent. Keeps token cost sane.
+// =========================================================================
+function buildContext(agentName, idea, stageOutputs) {
+  const base = `IDEA: ${idea.name}\n\nDESCRIPTION: ${idea.summary}`;
+
+  switch (agentName) {
+    case "Execution Strategist":
+    case "Market Analyst":
+      return base;
+
+    case "Financial Architect":
+      return `${base}\n\nOPERATIONAL MODEL (summary): ${trunc(stageOutputs.exec, 600)}\n\nMARKET CONTEXT (summary): ${trunc(stageOutputs.market, 600)}`;
+
+    case "Brand Developer":
+      return `${base}\n\nTARGET CUSTOMER CONTEXT (summary): ${trunc(stageOutputs.market, 500)}`;
+
+    case "GTM Strategist":
+      return `${base}\n\nBRAND CONTEXT (summary): ${trunc(stageOutputs.brand, 500)}\n\nMARKET CONTEXT (summary): ${trunc(stageOutputs.market, 500)}`;
+
+    case "Problem Identifier":
+      return `${base}
+
+OPERATIONAL MODEL: ${trunc(stageOutputs.exec, 600)}
+MARKET APPROACH: ${trunc(stageOutputs.market, 600)}
+FINANCIAL MODEL: ${trunc(stageOutputs.financial, 600)}
+BRAND: ${trunc(stageOutputs.brand, 500)}
+GTM PLAN: ${trunc(stageOutputs.gtm, 600)}`;
+
+    case "Orchestrator":
+      return `${base}
+
+EXECUTION STRATEGIST OUTPUT:
+${trunc(stageOutputs.exec, 1200)}
+
+MARKET ANALYST OUTPUT:
+${trunc(stageOutputs.market, 1200)}
+
+FINANCIAL ARCHITECT OUTPUT:
+${trunc(stageOutputs.financial, 1200)}
+
+BRAND DEVELOPER OUTPUT:
+${trunc(stageOutputs.brand, 1000)}
+
+GTM STRATEGIST OUTPUT:
+${trunc(stageOutputs.gtm, 1200)}
+
+PROBLEM IDENTIFIER OUTPUT:
+${trunc(stageOutputs.problems, 1200)}`;
+
+    default:
+      return base;
+  }
+}
+
+// =========================================================================
+// Agent execution + logging
+// =========================================================================
+async function runAgent(agentName, wave, idea, stageOutputs, maxTokens, useSearch) {
+  setAgentStatus(agentName, "working");
+  await logActivity(idea.id, agentName, `${agentName} started (Wave ${wave})`);
+
+  const startedAt = new Date().toISOString();
+  const context = buildContext(agentName, idea, stageOutputs);
+
+  let output = "";
+  let status = "Complete";
+  let errorMessage = "";
+
+  try {
+    output = await callClaudeSafe(PROMPTS[agentName], context, maxTokens, useSearch);
+  } catch (e) {
+    status = "Error";
+    errorMessage = e.message;
+    output = "";
+  }
+
+  const completedAt = new Date().toISOString();
+
+  // Log every attempt, whether or not it ends up in the final blueprint.
+  try {
+    await fetch("/api/agent-outputs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        Idea: [idea.id],
+        "Agent Name": agentName,
+        Wave: wave,
+        "Attempt Number": 1,
+        Status: status,
+        Output: output,
+        "Error Message": errorMessage,
+        "Started At": startedAt,
+        "Completed At": completedAt
+      })
+    });
+  } catch (e) {
+    console.error("Failed to log agent output", e);
+  }
+
+  setAgentStatus(agentName, status === "Complete" ? "done" : "error");
+  await logActivity(
+    idea.id,
+    agentName,
+    status === "Complete" ? `${agentName} completed` : `${agentName} failed: ${errorMessage}`
+  );
+
+  return output;
+}
+
+// =========================================================================
+// The 5-wave pipeline
+// =========================================================================
+async function runFullPipeline(idea) {
+  const stageOutputs = {};
+
+  await updateIdeaStatus(idea.id, "Wave 1");
+  const [exec, market] = await Promise.all([
+    runAgent("Execution Strategist", 1, idea, stageOutputs, 3000, true),
+    runAgent("Market Analyst", 1, idea, stageOutputs, 3000, true)
+  ]);
+  stageOutputs.exec = exec;
+  stageOutputs.market = market;
+
+  await updateIdeaStatus(idea.id, "Wave 2");
+  const [financial, brand] = await Promise.all([
+    runAgent("Financial Architect", 2, idea, stageOutputs, 3000, true),
+    runAgent("Brand Developer", 2, idea, stageOutputs, 3000, true)
+  ]);
+  stageOutputs.financial = financial;
+  stageOutputs.brand = brand;
+
+  await updateIdeaStatus(idea.id, "Wave 3");
+  stageOutputs.gtm = await runAgent("GTM Strategist", 3, idea, stageOutputs, 3000, true);
+
+  await updateIdeaStatus(idea.id, "Wave 4");
+  stageOutputs.problems = await runAgent("Problem Identifier", 4, idea, stageOutputs, 2500, false);
+
+  await updateIdeaStatus(idea.id, "Wave 5");
+  const orchestratorOutput = await runAgent("Orchestrator", 5, idea, stageOutputs, 6000, false);
+
+  const blueprint = parseOrchestratorOutput(orchestratorOutput);
+  await saveBlueprint(idea.id, blueprint);
+  await updateIdeaStatus(idea.id, "Complete");
+  await logActivity(idea.id, "Orchestrator", "Execution Blueprint complete.");
+
+  loadBlueprints();
+}
+
+function parseOrchestratorOutput(text) {
+  const sections = {
+    "Executive Briefing": "EXECUTIVE_BRIEFING",
+    "Operational Design": "OPERATIONAL_DESIGN",
+    "Financial Model": "FINANCIAL_MODEL",
+    "Brand Package": "BRAND_PACKAGE",
+    "Launch Playbook": "LAUNCH_PLAYBOOK",
+    "Problem Areas": "PROBLEM_AREAS",
+    "Next 10 Actions": "NEXT_ACTIONS"
+  };
+  const keys = Object.values(sections);
+  const result = {};
+
+  keys.forEach((key, i) => {
+    const nextKey = keys[i + 1];
+    const startPattern = new RegExp(key + ":\\s*");
+    const startMatch = text.match(startPattern);
+    if (!startMatch) return;
+    const startIdx = startMatch.index + startMatch[0].length;
+    let endIdx = text.length;
+    if (nextKey) {
+      const endMatch = text.match(new RegExp(nextKey + ":"));
+      if (endMatch) endIdx = endMatch.index;
+    }
+    const fieldName = Object.keys(sections).find(k => sections[k] === key);
+    result[fieldName] = clean(text.substring(startIdx, endIdx));
+  });
+
+  return result;
+}
+
+async function updateIdeaStatus(id, status) {
+  await fetch(`/api/ideas/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ Status: status })
+  });
+}
+
+async function saveBlueprint(ideaId, blueprint) {
+  await fetch("/api/blueprints", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      Idea: [ideaId],
+      "Executive Briefing": blueprint["Executive Briefing"] || "",
+      "Operational Design": blueprint["Operational Design"] || "",
+      "Financial Model": blueprint["Financial Model"] || "",
+      "Brand Package": blueprint["Brand Package"] || "",
+      "Launch Playbook": blueprint["Launch Playbook"] || "",
+      "Problem Areas": blueprint["Problem Areas"] || "",
+      "Next 10 Actions": blueprint["Next 10 Actions"] || "",
+      "Export Status": "Not Exported",
+      "Completed At": new Date().toISOString()
+    })
+  });
+}
+
+// =========================================================================
+// Idea submission
+// =========================================================================
+async function submitIdea() {
+  const name = document.getElementById("ideaName").value.trim();
+  const raw = document.getElementById("ideaInput").value.trim();
+  if (!name || !raw) {
+    alert("Please enter both an idea name and description.");
+    return;
+  }
+
+  document.getElementById("submitBtn").disabled = true;
+  AGENTS.forEach(a => setAgentStatus(a, "idle"));
+
+  try {
+    const record = await fetch("/api/ideas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        "Idea Name": name,
+        "Raw Idea Input": raw,
+        "Refined Summary": raw,
+        Status: "New",
+        "Date Submitted": new Date().toISOString()
+      })
+    }).then(r => r.json());
+
+    if (!record || !record.id) {
+      throw new Error("Idea creation failed - no record ID returned.");
+    }
+
+    const idea = { id: record.id, name, summary: raw };
+    await logActivity(idea.id, "System", `New idea submitted: ${name}`);
+    await runFullPipeline(idea);
+  } catch (e) {
+    console.error(e);
+    alert("Pipeline error: " + e.message);
+  } finally {
+    document.getElementById("submitBtn").disabled = false;
+  }
+}
+
+// =========================================================================
+// Blueprint list (card view - no Kanban needed per spec)
+// =========================================================================
+async function loadBlueprints() {
+  const blueprints = await fetch("/api/blueprints").then(r => r.json());
+  const ideas = await fetch("/api/ideas").then(r => r.json());
+  const ideaById = Object.fromEntries(ideas.map(i => [i.id, i.fields]));
+
+  const list = document.getElementById("blueprintList");
+  list.innerHTML = "";
+
+  blueprints.forEach(bp => {
+    const f = bp.fields;
+    const ideaId = f["Idea"] && f["Idea"][0];
+    const ideaFields = ideaById[ideaId] || {};
+    const name = ideaFields["Idea Name"] || "Untitled Idea";
+    const status = ideaFields["Status"] || "";
+
+    const card = document.createElement("div");
+    card.className = "blueprint-card";
+
+    const sectionsMap = {
+      "Executive Briefing": f["Executive Briefing"],
+      "Operational Design": f["Operational Design"],
+      "Financial Model": f["Financial Model"],
+      "Brand Package": f["Brand Package"],
+      "90-Day Launch Playbook": f["Launch Playbook"],
+      "Problem Areas": f["Problem Areas"],
+      "Next 10 Actions": f["Next 10 Actions"]
+    };
+
+    let sectionsHtml = "";
+    Object.entries(sectionsMap).forEach(([title, body], idx) => {
+      const sid = bp.id + "-" + idx;
+      sectionsHtml += `
+        <div class="section-toggle" onclick="toggleSection('${sid}')">
+          <span>${title}</span><span>+</span>
+        </div>
+        <div class="section-body" id="section-${sid}">${(body || "").replace(/</g, "&lt;")}</div>
+      `;
+    });
+
+    card.innerHTML = `
+      <h3>${name}</h3>
+      <div class="status">${status}</div>
+      ${sectionsHtml}
+      <div class="export-row">
+        <button onclick="window.open('/api/blueprints/${bp.id}/export', '_blank')">Export Word Doc</button>
+        <button onclick="printBlueprint('${bp.id}')">Print / PDF</button>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function toggleSection(id) {
+  document.getElementById("section-" + id).classList.toggle("open");
+}
+
+async function printBlueprint(id) {
+  const bp = await fetch(`/api/blueprints/${id}`).then(r => r.json());
+  const f = bp.fields;
+  const html = `
+    <html><head><title>Execution Blueprint</title></head>
+    <body style="font-family: sans-serif; padding: 40px; max-width: 800px; margin: auto;">
+      <h1>Execution Blueprint</h1>
+      <h2>Executive Briefing</h2><p>${(f["Executive Briefing"] || "").replace(/\n/g, "<br>")}</p>
+      <h2>Operational Design</h2><p>${(f["Operational Design"] || "").replace(/\n/g, "<br>")}</p>
+      <h2>Financial Model</h2><p>${(f["Financial Model"] || "").replace(/\n/g, "<br>")}</p>
+      <h2>Brand Package</h2><p>${(f["Brand Package"] || "").replace(/\n/g, "<br>")}</p>
+      <h2>90-Day Launch Playbook</h2><p>${(f["Launch Playbook"] || "").replace(/\n/g, "<br>")}</p>
+      <h2>Problem Areas</h2><p>${(f["Problem Areas"] || "").replace(/\n/g, "<br>")}</p>
+      <h2>Next 10 Actions</h2><p>${(f["Next 10 Actions"] || "").replace(/\n/g, "<br>")}</p>
+      <p><em>Press Cmd+P / Ctrl+P to print or save as PDF.<\/em></p>
+    <\/body><\/html>
+  `;
+  const win = window.open("", "_blank");
+  win.document.write(html);
+  win.document.close();
+}
+
+// =========================================================================
+// Init
+// =========================================================================
+(async function init() {
+  await loadConfig();
+  await loadBlueprints();
+})();
+</script>
+</body>
+</html>
